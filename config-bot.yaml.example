@@ -1,0 +1,204 @@
+# ============================================================
+# config-bot.yaml  -  Apple Music Downloader Telegram Bot
+# Copy this file to config-bot.yaml and fill in your values.
+# All sections from config.yaml are also valid here.
+# ============================================================
+
+# ------------------------------------------------------------------------------
+# Telegram Bot Settings
+# ------------------------------------------------------------------------------
+telegram:
+  # Bot token from @BotFather (required)
+  token: "YOUR_TELEGRAM_BOT_TOKEN"
+
+  # List of Telegram user IDs allowed to use the bot.
+  # Leave empty to allow everyone (not recommended on a public server).
+  allowed-users: []
+  #  - 123456789
+  #  - 987654321
+
+  # User IDs with admin access (future: /stats, /restart, etc.)
+  admin-ids: []
+
+  # What to do with a file that is over the upload limit above.
+  #   none   - only tell the user that it is too large (default)
+  #   gofile - pack every such file of the job into ONE zip (stored, not
+  #            compressed), upload it to Gofile and send the user the link.
+  # Anyone who has the link can download the zip, and the zip is built in the
+  # system temp directory, so that needs free space equal to the files' size.
+  large-file-host: "none"
+
+  # Optional Gofile account token (from your Gofile profile). Without one the bot
+  # uploads as a guest: Gofile returns a guest token, which is saved in
+  # gofile-token-file and reused, instead of creating an account per upload.
+  gofile-token: ""
+  gofile-token-file: "amdl-gofile-token.txt"
+
+  # Self-hosted Telegram Bot API server (optional). Leave empty to use the public
+  # api.telegram.org, which accepts uploads up to 50 MB. A server started with
+  # --local accepts up to 2000 MB. See "Local Bot API server" in README-BOT.md,
+  # in particular the logOut step, BEFORE setting this.
+  api-endpoint: ""            # e.g. "http://telegram-bot-api:8081"
+
+  # Daily download limits per user (0 = no limit, the default). Strongly
+  # recommended when allowed-users is empty, since then anyone can use the bot.
+  # Only what a download actually fetches counts; tracks sent from the file_id
+  # cache are free and still delivered after the limit is reached. Admins
+  # (admin-ids) are exempt. The day is the SERVER's local calendar day: set the TZ
+  # environment variable (for example TZ=Asia/Ho_Chi_Minh) to move midnight.
+  #
+  # The data limit is soft: a download's size is not known in advance, so a job may
+  # start with any data allowance left and can exceed it.
+  daily-track-limit: 0       # e.g. 30
+  daily-mb-limit: 0          # e.g. 3072
+  quota-file: "amdl-quota.json"   # keeps the day's usage across restarts
+
+  # Maximum simultaneous download jobs per user.
+  max-jobs-per-user: 2
+
+  # Number of downloads that run at the same time. Each one is a separate process
+  # (the bot starts itself with -worker), so this really is parallel: it multiplies
+  # CPU, network, memory (see general.max-memory-limit) and the load on wrapper-lite.
+  # Two users asking for the same album at once are serialised automatically.
+  workers: 2
+
+  # Files larger than this (MB) will not be sent via Telegram.
+  # A bot can upload up to 50 MB through api.telegram.org, or up to 2000 MB
+  # through a local Bot API server. Premium accounts do not change this.
+  # max-file-size-mb: 50      # omit to get 50, or 2000 when api-endpoint is set
+
+  # Send downloaded files as Telegram documents (true) or only show a
+  # summary with the local save path (false, useful for self-hosted setups
+  # where the user already has access to the file system).
+  send-as-document: true
+
+  # Webhook settings (optional).
+  # If webhook-url is empty, long-polling is used (simpler, no HTTPS needed).
+  webhook-url: ""       # e.g. "https://myserver.example.com/bot"
+  webhook-port: 8443    # 443 | 80 | 88 | 8443
+
+  # File cleanup after upload.
+  #
+  # never          - Keep all downloaded files (default).
+  # on_upload      - Delete each file immediately after it is sent to Telegram.
+  # disk_pressure  - Keep files normally; auto-delete oldest files when disk
+  #                  usage on the output partition exceeds disk-threshold-pct.
+  delete-mode: "never"
+
+  # Used only when delete-mode is "disk_pressure".
+  # Delete oldest files when the partition holding the output directories
+  # is above this percentage full (default: 80).
+  disk-threshold-pct: 80
+
+  # How often (in minutes) to check disk usage (default: 5).
+  disk-check-interval-min: 5
+
+  # Safety limits for "disk_pressure". The threshold above is measured on the
+  # WHOLE disk, so if other data keeps the disk above it, these limits are what
+  # stop the bot from deleting every download.
+  #
+  # Files modified more recently than this many minutes are never removed
+  # (they may still be downloading or waiting to be uploaded). Default: 60.
+  disk-min-age-min: 60
+  # The most one check may remove, in MB, counted across all output
+  # directories. Cleaning simply continues at the next check. Default: 2048.
+  disk-max-delete-mb: 2048
+
+  # Loopback port used to refuse starting a second bot on the same machine
+  # (two instances with one token cause "Conflict: terminated by other
+  # getUpdates request"). Change it only if another program uses this port.
+  instance-lock-port: 47651
+
+  # Path to the JSON file where download statistics are persisted across restarts.
+  stats-file: "amdl-stats.json"
+
+  # Path to the JSON file that caches Telegram file_ids for previously uploaded
+  # tracks. When a user requests a track that was already uploaded, the bot
+  # sends it directly from Telegram's servers without re-downloading or
+  # re-uploading. Entries are keyed by track and quality, and a track is only
+  # cached when it was uploaded with a valid thumbnail.
+  fileid-cache-file: "amdl-fileid-cache.json"
+
+  # wrapper-lite health monitor.
+  # The bot pings <general.lite-server>/health on this interval and alerts
+  # all admin-ids if the server becomes unreachable (after 2 consecutive failures).
+  monitor-interval-min: 2   # how often to check (default: 2)
+  monitor-timeout-sec: 5    # HTTP timeout per ping (default: 5)
+
+# ------------------------------------------------------------------------------
+# App Settings  (same as config.yaml)
+# ------------------------------------------------------------------------------
+general:
+  # Inside Docker use "http://host.docker.internal:12340" to reach wrapper-lite on the host.
+  lite-server: "http://127.0.0.1:12340"
+  media-user-token: ""
+  language: ""
+  storefront: "us"
+  proxy: ""
+  max-memory-limit: 256
+  exit-on-error: false
+
+  # Fallback Apple Music API token used when the bot cannot reach music.apple.com
+  # (e.g. the server has no direct internet access or is behind a firewall).
+  # To obtain: open music.apple.com in a browser, open DevTools -> Network,
+  # find any API request and copy the "Authorization: Bearer eyJ..." header value.
+  # Paste the full "eyJ..." string (without "Bearer ") below.
+  # Leave empty to always auto-fetch (requires outbound HTTPS to music.apple.com).
+  authorization-token: ""
+
+media:
+  get-m3u8-mode: "hires"
+  alac-max: 192000
+  atmos-max: 2768
+  aac-type: "aac-lc"
+  alac-fix: true
+  mv:
+    audio-type: "atmos"
+    max: 2160
+
+paths:
+  alac: "AM-Lossless"
+  atmos: "AM-Atmos"
+  aac: "AM-AAC"
+  mv: "AM-MV"
+  album-folder: "{AlbumName}"
+  playlist-folder: "{PlaylistName}"
+  artist-folder: "{UrlArtistName}"
+  song-file: "{SongNumer}. {SongName}"
+  limit-max: 200
+  explicit: "[E]"
+  clean: "[C]"
+  apple-master: "[M]"
+
+metadata:
+  lyrics:
+    save-file: false
+    embed: true
+    type: "lyrics"
+    format: "lrc"
+    extra: ""
+  artwork:
+    embed: true
+    size: "5000x5000"
+    format: "jpg"
+    save-artist: false
+    save-animated: false
+    emby-animated: false
+    dl-for-playlist: false
+  tags:
+    sort-order: true
+    itunes-id: true
+    use-songinfo-for-playlist: false
+
+convert:
+  after-download: false
+  format: "flac"
+  keep-original: false
+  skip-if-source-matches: true
+  ffmpeg-path: "ffmpeg"
+  extra-args: ""
+  with-metadata: true
+  warn-lossy-to-lossless: true
+  skip-lossy-to-lossless: true
+  check-bad-alac: false
+  delete-bad-alac: false

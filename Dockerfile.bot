@@ -1,0 +1,23 @@
+# ---- Build stage ----
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -ldflags="-s -w" -o amdl-bot ./cmd/bot
+
+# ---- Runtime stage ----
+FROM alpine:3.21
+
+# ffmpeg is optional; remove if you do not use post-download conversion.
+RUN apk add --no-cache ca-certificates ffmpeg tzdata
+
+WORKDIR /data
+COPY --from=builder /app/amdl-bot /usr/local/bin/amdl-bot
+
+# Mount config-bot.yaml and download directories at /data
+VOLUME ["/data"]
+
+ENTRYPOINT ["amdl-bot", "--config", "/data/config-bot.yaml"]

@@ -1,0 +1,50 @@
+# Telegram bot, plus an optional self-hosted Bot API server.
+#
+# wrapper-lite is deliberately NOT started here. It needs an interactive Apple ID
+# login and elevated privileges, and its Docker instructions differ between
+# branches, so run it yourself as described in the amdl README and point
+# general.lite-server at it. From inside this container the host is reachable as
+# http://host.docker.internal:12340 (see extra_hosts below).
+#
+# Usage:
+#   cp config-bot.yaml.example config-bot.yaml        # set token and lite-server
+#   docker compose -f docker-compose.bot.yml up -d    # bot only
+#
+# With a local Bot API server (uploads up to 2000 MB instead of 50 MB):
+#   printf 'TELEGRAM_API_ID=...\nTELEGRAM_API_HASH=...\n' > .env   # from https://my.telegram.org
+#   docker compose -f docker-compose.bot.yml --profile local-api up -d
+#   then follow "Local Bot API server" in README-BOT.md before setting api-endpoint.
+
+services:
+
+  amdl-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the bot reach wrapper-lite on the host
+    volumes:
+      # config file (required)
+      - ./config-bot.yaml:/data/config-bot.yaml:ro
+      # download directories (must match paths.* in config-bot.yaml)
+      - ./downloads:/data/downloads
+    environment:
+      - TZ=UTC
+
+  telegram-bot-api:
+    profiles: ["local-api"]
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      # Empty defaults keep "bot only" runs working when .env does not exist.
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "127.0.0.1:8081:8081"   # only needed if the bot runs outside Docker
+
+volumes:
+  telegram-bot-api-data:
