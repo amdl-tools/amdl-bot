@@ -66,6 +66,12 @@ func TestHelperWorker(t *testing.T) {
 	case "hang":
 		fmt.Println("Track 1 of 2: ALAC")
 		time.Sleep(time.Hour)
+	case "file":
+		// One finished download whose file the test created (named in the environment).
+		fmt.Println("Track 1 of 1: songs")
+		writeResult(workerResult{AddedTracks: []app.AddedTrack{{
+			Path: os.Getenv("AMDL_TEST_FILE"), TrackID: "777", Artist: "A", Album: "B", Song: "S",
+		}}})
 	case "frames":
 		// Like the downloader's own progress bar: frames separated by a carriage
 		// return, no newline until the bar is complete (which never happens here).

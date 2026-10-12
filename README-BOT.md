@@ -345,8 +345,36 @@ Decrypting 63% at 3.2 MB/s
   Drawing happens on its own goroutine: if Telegram is slow, the download is not.
   The final message says how long the download took.
 
-What it does not do: the upload to Telegram that follows a download has no progress
-of its own; the files simply arrive one by one.
+### Upload progress
+
+When the download is done, the same message goes on to show the upload to
+Telegram, and ends with the summary:
+
+```
+Uploading to Telegram [alac]
+[#######-------------] 35%
+File 3 of 9: 03. Song Name.m4a
+12.4 MB of 27.3 MB at 2.1 MB/s
+1m 10s elapsed, about 2m left
+```
+
+and finally `Download complete in 2m 31s, upload in 3m 20s:` followed by the list of
+tracks. The user follows one message from the cache check to the end.
+
+- **The bar counts bytes** of the files that really go to Telegram. Tracks sent from
+  the cache (no upload) and files over the size limit (zipped and sent to a file
+  host, which has its own message) are not part of it.
+- **The count is of bytes handed to the network.** Telegram's client library has no
+  progress callback, so each file is passed through a reader that counts what it
+  hands over. That runs a little ahead of what Telegram has actually received, so
+  when a file's last byte has been handed over the message says it is *waiting for
+  Telegram* rather than claiming the file has arrived. The rate shown is that of
+  the current file; the estimate of the time left uses the pace since the first
+  byte went out, so it includes the pauses between files.
+- **`/cancel` now stops an upload that is in progress.** The same reader ends the
+  transfer as soon as the job is cancelled, instead of letting the current file
+  finish first.
+- Small thumbnails sent along with a track are not counted.
 
 How the percentage is read: the downloader draws a progress bar for each track
 (the `schollz/progressbar` library), redrawing one line with carriage returns.

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"amdl/internal/app"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -479,12 +480,23 @@ func (b *Bot) processJob(job *Job) {
 	if plan.Delivered > 0 {
 		summary = fmt.Sprintf("(%d more track(s) were sent from cache)\n", plan.Delivered) + summary
 	}
-	prog.Done(fmt.Sprintf("Download complete in %s:\n\n%s", formatElapsed(prog.Elapsed()), summary))
+	downloadTime := prog.Elapsed()
 
-	// Step 3: upload the freshly downloaded tracks.
-	if b.cfg.SendAsDocument {
-		b.sendFiles(job, result.AddedTracks)
+	// With send-as-document off the files stay on the server: the job ends here.
+	if !b.cfg.SendAsDocument {
+		prog.Done(fmt.Sprintf("Download complete in %s:\n\n%s", formatElapsed(downloadTime), summary))
+		return
 	}
+
+	// Step 3: upload the freshly downloaded tracks. The job's message goes on to
+	// show the upload and ends with the same summary the download would have ended
+	// with, so the user follows one message from start to finish.
+	prog.Stop()
+	up := NewUploadProgress(job.Mode, func(text string) {
+		b.edit(job.ChatID, job.MessageID, text)
+	})
+	up.SetFinal(summary, downloadTime)
+	b.sendTracks(job, result.AddedTracks, up)
 }
 
 // listNames formats up to 10 track names for a status message.
@@ -500,21 +512,48 @@ func listNames(names []string) string {
 	return strings.Join(lines, "\n")
 }
 
-// sendFiles sends each downloaded track to the user.
+// sendFiles sends each downloaded track to the user without showing progress.
+func (b *Bot) sendFiles(job *Job, tracks []app.AddedTrack) {
+	b.sendTracks(job, tracks, nil)
+}
+
+// sendTracks sends each downloaded track to the user.
 // It checks the file_id cache first; if a cache hit is found the file is sent
 // directly from Telegram's servers (no upload, no disk read).
 // On a cache miss the file is uploaded and the returned file_id is stored for
 // future requests.
-// Files over MaxFileSizeMB are skipped with a notice.
-func (b *Bot) sendFiles(job *Job, tracks []app.AddedTrack) {
+// Files over MaxFileSizeMB are skipped with a notice, or zipped and uploaded to a
+// file host when one is configured.
+//
+// up, when not nil, shows the upload in the job's message and ends that message
+// with the final summary, on every path out of this function. Passing nil sends
+// the files without any progress display.
+func (b *Bot) sendTracks(job *Job, tracks []app.AddedTrack, up *UploadProgress) {
+	defer up.Complete() // idempotent: the message always ends with its final text
+
 	limitBytes := b.cfg.MaxFileSizeMB * 1024 * 1024
+
+	// Work out what will really be uploaded to Telegram, for the progress bar.
+	// Tracks that are cached, missing or over the limit are not part of it.
+	planned := make([]bool, len(tracks))
+	var planFiles int
+	var planBytes int64
+	for i, t := range tracks {
+		if size, ok := b.uploadSize(t, job.Mode, limitBytes); ok {
+			planned[i] = true
+			planFiles++
+			planBytes += size
+		}
+	}
+	up.Plan(planFiles, planBytes)
 
 	// Tracks over the limit are collected here and delivered as one ZIP link
 	// after the others have been sent, when a file host is configured.
 	var oversized []app.AddedTrack
 
-	for _, track := range tracks {
+	for i, track := range tracks {
 		if job.ctx.Err() != nil {
+			up.Cancel()
 			return // cancelled: send nothing more
 		}
 		if track.Path == "" {
@@ -557,14 +596,27 @@ func (b *Bot) sendFiles(job *Job, tracks []app.AddedTrack) {
 			continue
 		}
 
+		if !planned[i] {
+			up.AddUnplanned(info.Size()) // its cached copy was unusable: it is uploaded after all
+		}
+		up.Begin(filepath.Base(track.Path), info.Size())
+
+		// Called from the goroutine that streams the file; up may be nil.
+		onSent := func(sent, total int64) { up.Sent(sent) }
+
 		var sendErr error
 		if isAudio {
-			sendErr = b.sendAudio(job.ChatID, job.Mode, track)
+			sendErr = b.sendAudio(job.ctx, job.ChatID, job.Mode, track, onSent)
 		} else {
-			sendErr = b.sendDocument(job.ChatID, job.Mode, track)
+			sendErr = b.sendDocument(job.ctx, job.ChatID, job.Mode, track, onSent)
 		}
+		up.Finish()
 
 		if sendErr != nil {
+			if job.ctx.Err() != nil {
+				up.Cancel() // /cancel stopped the transfer: that is not an error to report
+				return
+			}
 			_, _ = b.api.Send(tgbotapi.NewMessage(job.ChatID,
 				fmt.Sprintf("Could not send %s: %v", filepath.Base(track.Path), sendErr)))
 			continue
@@ -572,9 +624,47 @@ func (b *Bot) sendFiles(job *Job, tracks []app.AddedTrack) {
 		b.cleaner.OnUploaded(track.Path)
 	}
 
+	// The job's own message is finished before the slower ZIP upload, which has
+	// its own messages.
+	up.Complete()
+
 	if len(oversized) > 0 && job.ctx.Err() == nil {
 		b.deliverLarge(job, oversized)
 	}
+}
+
+// uploadSize reports whether track will be uploaded to Telegram, which is when it
+// is not in the file_id cache, exists, and is within the size limit, and its size.
+func (b *Bot) uploadSize(track app.AddedTrack, mode Mode, limitBytes int64) (int64, bool) {
+	if track.Path == "" {
+		return 0, false
+	}
+	if _, cached := b.fileIDCache.Get(track.TrackID, mode); cached {
+		return 0, false
+	}
+	info, err := os.Stat(track.Path)
+	if err != nil || info.Size() > limitBytes {
+		return 0, false
+	}
+	return info.Size(), true
+}
+
+// uploadSource opens a file for upload. The file is handed to the Telegram
+// client through a reader that reports every read to onSent (which may be nil)
+// and ends the transfer as soon as ctx does, so a cancelled job stops uploading
+// at once. The returned function closes the file; call it when the upload is over.
+func uploadSource(ctx context.Context, path string, onSent func(sent, total int64)) (tgbotapi.RequestFileData, func(), error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, func() {}, err
+	}
+	reader := &uploadReader{ctx: ctx, r: f, total: info.Size(), fn: onSent}
+	return tgbotapi.FileReader{Name: filepath.Base(path), Reader: reader}, func() { f.Close() }, nil
 }
 
 // sendAudioCached sends an audio track using a previously stored Telegram file_id.
@@ -662,8 +752,14 @@ func (b *Bot) buildThumbnail(track app.AddedTrack) (string, func()) {
 
 // sendAudio uploads an audio file with a Telegram-compliant thumbnail and
 // stores the returned file_id in the cache.
-func (b *Bot) sendAudio(chatID int64, mode Mode, track app.AddedTrack) error {
-	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(track.Path))
+func (b *Bot) sendAudio(ctx context.Context, chatID int64, mode Mode, track app.AddedTrack, onSent func(sent, total int64)) error {
+	src, closeSrc, err := uploadSource(ctx, track.Path, onSent)
+	if err != nil {
+		return err
+	}
+	defer closeSrc() // before the caller deletes the file: an open file cannot be removed on Windows
+
+	audio := tgbotapi.NewAudio(chatID, src)
 	audio.Performer = track.Artist
 	audio.Title = track.Song
 
@@ -693,8 +789,14 @@ func (b *Bot) sendAudio(chatID int64, mode Mode, track app.AddedTrack) error {
 }
 
 // sendDocument uploads a non-audio file with a thumbnail and caches the file_id.
-func (b *Bot) sendDocument(chatID int64, mode Mode, track app.AddedTrack) error {
-	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(track.Path))
+func (b *Bot) sendDocument(ctx context.Context, chatID int64, mode Mode, track app.AddedTrack, onSent func(sent, total int64)) error {
+	src, closeSrc, err := uploadSource(ctx, track.Path, onSent)
+	if err != nil {
+		return err
+	}
+	defer closeSrc()
+
+	doc := tgbotapi.NewDocument(chatID, src)
 
 	thumbPath, cleanThumb := b.buildThumbnail(track)
 	defer cleanThumb()

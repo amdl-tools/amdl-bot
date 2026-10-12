@@ -2,13 +2,17 @@ package bot
 
 import (
 	"amdl/internal/app"
+	"context"
+	"errors"
 	"image/jpeg"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func requireFFmpeg(t *testing.T) {
@@ -254,5 +258,173 @@ func TestSendFilesSkipsOversizedFiles(t *testing.T) {
 	msgs := f.callsTo("sendMessage")
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Form.Get("text"), "too large") {
 		t.Fatalf("the user should be told the file is too large, got %+v", msgs)
+	}
+}
+
+// ---- upload progress ---------------------------------------------------------------
+
+func TestUploadSourceCountsBytesAndKeepsTheFileName(t *testing.T) {
+	path := tempUpload(t, 100000)
+	var lastSent, lastTotal int64
+	src, closeSrc, err := uploadSource(context.Background(), path, func(sent, total int64) {
+		lastSent, lastTotal = sent, total
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeSrc()
+
+	if !src.NeedsUpload() {
+		t.Fatal("a file must be uploaded, not sent by id")
+	}
+	name, reader, err := src.UploadData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "upload.zip" {
+		t.Errorf("file name = %q, want the base name", name)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil || len(data) != 100000 {
+		t.Fatalf("read %d bytes (%v), want 100000", len(data), err)
+	}
+	if lastSent != 100000 || lastTotal != 100000 {
+		t.Errorf("progress ended at %d of %d", lastSent, lastTotal)
+	}
+}
+
+// A cancelled job must stop the transfer, not wait for the file to finish.
+func TestUploadSourceStopsWhenTheJobIsCancelled(t *testing.T) {
+	path := tempUpload(t, 100000)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	src, closeSrc, err := uploadSource(ctx, path, func(sent, total int64) { cancel() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeSrc()
+
+	_, reader, _ := src.UploadData()
+	data, err := io.ReadAll(reader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if len(data) >= 100000 {
+		t.Fatal("the transfer should have stopped part way")
+	}
+}
+
+func TestUploadSourceMissingFile(t *testing.T) {
+	if _, _, err := uploadSource(context.Background(), filepath.Join(t.TempDir(), "gone.m4a"), nil); err == nil {
+		t.Fatal("a missing file must be an error")
+	}
+}
+
+func TestSendTracksShowsTheUploadAndEndsWithTheSummary(t *testing.T) {
+	f := newFakeTG(t)
+	b := newTestBot(t, f)
+	dir := t.TempDir()
+	first, second := filepath.Join(dir, "01. A.m4a"), filepath.Join(dir, "02. B.m4a")
+	writeSized(t, first, 1<<20)
+	writeSized(t, second, 2<<20)
+
+	edits := &editLog{}
+	up := NewUploadProgress(ModeALAC, edits.add)
+	up.SetFinal("SUMMARY", 90*time.Second)
+
+	b.sendTracks(newJob(1, 100, 5, songURL, ModeALAC, "u"),
+		[]app.AddedTrack{{Path: first, TrackID: "1"}, {Path: second, TrackID: "2"}}, up)
+
+	if got := len(f.callsTo("sendAudio")); got != 2 {
+		t.Fatalf("got %d sendAudio calls, want 2", got)
+	}
+	texts := edits.all()
+	last := texts[len(texts)-1]
+	if !strings.HasPrefix(last, "Download complete in 1m 30s, upload in ") || !strings.HasSuffix(last, ":\n\nSUMMARY") {
+		t.Fatalf("final text = %q", last)
+	}
+	if !edits.anyContains("Uploading to Telegram [alac]") {
+		t.Fatal("the upload was never shown")
+	}
+	if up.doneFiles != 2 || up.doneBytes != 3<<20 {
+		t.Fatalf("counted %d files and %d bytes, want 2 and %d", up.doneFiles, up.doneBytes, 3<<20)
+	}
+}
+
+func TestSendTracksCountsAnUploadWhoseCachedCopyWentStale(t *testing.T) {
+	f := newFakeTG(t)
+	b := newTestBot(t, f)
+	b.fileIDCache.Set("9", ModeALAC, audioEntry("STALE"))
+	f.setOverride(func(c tgCall) (int, string, bool) {
+		if c.Method == "sendAudio" && c.Form.Get("audio") == "STALE" {
+			return http.StatusBadRequest, staleFileIDJSON, true
+		}
+		return 0, "", false
+	})
+	path := writeTrackFile(t, "01. Song.m4a", "this is not real audio")
+
+	up := NewUploadProgress(ModeALAC, nil)
+	b.sendTracks(newJob(1, 100, 5, songURL, ModeALAC, "u"), []app.AddedTrack{{Path: path, TrackID: "9"}}, up)
+
+	// It was cached, so the plan had no upload; the fallback added one.
+	if up.files != 1 || up.doneFiles != 1 {
+		t.Fatalf("files planned %d, finished %d; want 1 and 1", up.files, up.doneFiles)
+	}
+}
+
+func TestSendTracksCancelledBeforeUploadingEndsWithCancelled(t *testing.T) {
+	f := newFakeTG(t)
+	b := newTestBot(t, f)
+	path := writeTrackFile(t, "01. Song.m4a", "x")
+	edits := &editLog{}
+	up := NewUploadProgress(ModeALAC, edits.add)
+	job := newJob(1, 100, 5, songURL, ModeALAC, "u")
+	job.cancel()
+
+	b.sendTracks(job, []app.AddedTrack{{Path: path, TrackID: "1"}}, up)
+
+	texts := edits.all()
+	if got := texts[len(texts)-1]; got != "Cancelled while uploading: 0 of 1 file(s) were sent." {
+		t.Fatalf("final text = %q", got)
+	}
+	if len(f.callsTo("sendAudio")) != 0 {
+		t.Fatal("a cancelled job must not upload anything")
+	}
+}
+
+// One message follows the job from the cache check to the end: the upload takes
+// over from the download in the same message and the summary is written there.
+func TestProcessJobShowsTheUploadInTheSameMessage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "01. Song.m4a")
+	writeSized(t, path, 2<<20)
+	t.Setenv("AMDL_TEST_FILE", path)
+	useHelperWorker(t, "file")
+
+	f := newFakeTG(t)
+	b := newTestBot(t, f)
+	job := newJob(1, 100, 5, songURL, ModeALAC, "alice")
+	b.processJob(job)
+
+	edits := f.callsTo("editMessageText")
+	sawUpload := false
+	for _, c := range edits {
+		if c.Form.Get("message_id") != "5" {
+			t.Fatalf("an edit went to message %q, want the job's message 5", c.Form.Get("message_id"))
+		}
+		if strings.Contains(c.Form.Get("text"), "Uploading to Telegram [alac]") {
+			sawUpload = true
+		}
+	}
+	if !sawUpload {
+		t.Fatal("the upload was never shown in the message")
+	}
+	last := edits[len(edits)-1].Form.Get("text")
+	mustContain(t, last, "Download complete in", ", upload in ", "A - B (1 track(s))")
+	if len(f.callsTo("sendAudio")) != 1 {
+		t.Fatalf("got %d sendAudio calls, want 1", len(f.callsTo("sendAudio")))
+	}
+	if job.Status != JobDone {
+		t.Fatalf("job status = %q", job.Status)
 	}
 }

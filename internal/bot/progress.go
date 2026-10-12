@@ -47,9 +47,8 @@ func stripANSI(s string) string { return reANSI.ReplaceAllString(s, "") }
 
 // Progress tracks one job's download and draws it into a Telegram message.
 type Progress struct {
-	editFn   func(text string)
-	interval time.Duration
-	now      func() time.Time // replaced by tests
+	r   *redrawer
+	now func() time.Time // replaced by tests
 
 	mu        sync.Mutex // guards everything below
 	mode      Mode
@@ -64,21 +63,20 @@ type Progress struct {
 	phase     string         // what it is doing, such as "Decrypting"
 	rate      string         // such as "3.2 MB/s"
 	startedAt time.Time
-	lastSent  string
-
-	stop     chan struct{} // closed to end the drawing goroutine; nil until Start
-	stopped  chan struct{} // closed when that goroutine has exited
-	stopOnce sync.Once
 }
 
 // NewProgress creates a tracker. editFn replaces the text of the Telegram message.
 func NewProgress(mode Mode, editFn func(text string)) *Progress {
-	return &Progress{
-		mode:     mode,
-		editFn:   editFn,
-		interval: progressInterval,
-		now:      time.Now,
-	}
+	p := &Progress{mode: mode, now: time.Now}
+	p.r = newRedrawer(editFn, progressInterval, p.currentText)
+	return p
+}
+
+// currentText is the message text as the redrawer needs it.
+func (p *Progress) currentText() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.render()
 }
 
 // SetPlan gives the tracker what the cache lookup learned about the link: how many
@@ -96,50 +94,15 @@ func (p *Progress) SetPlan(plan cachePlan) {
 	}
 }
 
-// Start begins redrawing the message every interval. It draws once at once, so
-// the user sees the bar as soon as the download starts.
+// Start begins redrawing the message every interval, starting with a drawing at
+// once, so the user sees the bar as soon as the download starts.
 func (p *Progress) Start() {
 	p.mu.Lock()
-	if p.stop != nil || p.editFn == nil {
-		p.mu.Unlock()
-		return
+	if p.startedAt.IsZero() {
+		p.startedAt = p.now()
 	}
-	p.startedAt = p.now()
-	p.stop = make(chan struct{})
-	p.stopped = make(chan struct{})
-	stop, stopped := p.stop, p.stopped
 	p.mu.Unlock()
-
-	go func() {
-		defer close(stopped)
-		p.tick()
-		t := time.NewTicker(p.interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-t.C:
-				p.tick()
-			}
-		}
-	}()
-}
-
-// tick edits the message when the text has changed since the last edit.
-func (p *Progress) tick() {
-	p.mu.Lock()
-	text := p.render()
-	changed := text != p.lastSent
-	if changed {
-		p.lastSent = text
-	}
-	fn := p.editFn
-	p.mu.Unlock()
-
-	if changed && fn != nil {
-		fn(text) // outside the lock: this is a network call
-	}
+	p.r.Start()
 }
 
 // Elapsed is how long the download has been running, or 0 before Start.
@@ -152,26 +115,14 @@ func (p *Progress) Elapsed() time.Duration {
 	return p.now().Sub(p.startedAt)
 }
 
+// Stop ends the redrawing and leaves the message as it is, for a step that goes
+// on to use the same message.
+func (p *Progress) Stop() { p.r.Stop() }
+
 // Done stops the redrawing and replaces the message with the final text. It waits
 // for an edit that is still in flight first, so a late progress frame can never
 // overwrite the final text.
-func (p *Progress) Done(text string) {
-	p.mu.Lock()
-	stop, stopped := p.stop, p.stopped
-	fn := p.editFn
-	p.mu.Unlock()
-
-	if stop != nil {
-		p.stopOnce.Do(func() { close(stop) })
-		select {
-		case <-stopped:
-		case <-time.After(10 * time.Second): // never hang the job on a stuck network call
-		}
-	}
-	if fn != nil {
-		fn(text)
-	}
-}
+func (p *Progress) Done(text string) { p.r.Done(text) }
 
 // Feed accepts one line, or one redrawn frame of a progress bar, printed by the
 // download, and updates the state. It does no I/O and never blocks.
