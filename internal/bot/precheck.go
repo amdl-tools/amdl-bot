@@ -84,7 +84,7 @@ func (b *Bot) listTracks(rawURL string) (list trackList, token string, ok bool) 
 		if storefront == "" || id == "" {
 			return trackList{}, "", false
 		}
-		tok, err := resolveToken(b.appCfg)
+		tok, err := b.resolvedToken()
 		if err != nil {
 			log.Printf("precheck: no Apple Music token, skipping cache lookup: %v", err)
 			return trackList{}, "", false

@@ -429,11 +429,24 @@ func (b *Bot) processJob(job *Job) {
 	prog.SetPlan(plan)
 	prog.Start()
 
+	// Resolve the token once in the main process and hand it to the worker so it
+	// never needs to fetch one itself. plan.Token is already set for album/playlist
+	// links (the precheck fetched it); for song/mv/station it is empty and we
+	// resolve it here. Either way the worker subprocess skips its own token fetch.
+	workerToken := plan.Token
+	if workerToken == "" {
+		workerToken, err = b.resolvedToken()
+		if err != nil {
+			prog.Done("Failed to obtain Apple Music token: " + err.Error())
+			return
+		}
+	}
+
 	// The download runs in a process of its own: cancelling the job kills it.
 	result := runDownloadProcess(job.ctx, b.cfgPath, workerRequest{
 		URL:        job.URL,
 		Mode:       job.Mode,
-		Token:      plan.Token,
+		Token:      workerToken,
 		SkipTracks: plan.Skip,
 	}, prog.Feed)
 
@@ -456,6 +469,11 @@ func (b *Bot) processJob(job *Job) {
 		job.Status = JobFailed
 		job.ErrMsg = result.Err.Error()
 		b.stats.RecordFailure(job.UserID, job.username)
+		// Invalidate the cached token when the error looks like an auth failure so the
+		// next job fetches a fresh one instead of reusing a rejected token.
+		if isAuthError(result.Err) {
+			b.invalidateToken()
+		}
 		prefix := ""
 		if plan.Delivered > 0 {
 			prefix = fmt.Sprintf("%d track(s) were sent from cache.\n", plan.Delivered)

@@ -26,7 +26,7 @@ type Bot struct {
 	uploader    Uploader   // file host for tracks over the Telegram limit; nil when disabled
 	locks       *keyedLock // serialises jobs that write the same album
 	cfgPath     string     // config file download processes load
-	token       string     // cached Apple Music API token (refreshed on error)
+	cachedToken tokenState // Apple Music API token shared across all precheck calls
 }
 
 // New creates and returns a fully initialised Bot.

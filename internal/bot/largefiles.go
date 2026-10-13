@@ -134,13 +134,29 @@ func uniqueEntry(name string, used map[string]bool) string {
 	return candidate
 }
 
-// zipFileName names the archive after the album when all tracks share one, and
-// generically otherwise.
+// zipFileName names the archive after the content it contains:
+//   - one track with no album (e.g. a music video): "Artist - Song"
+//   - multiple tracks that all share one album:      "Artist - Album"
+//   - anything else:                                  "amdl-download"
 func zipFileName(tracks []app.AddedTrack) string {
 	const generic = "amdl-download"
 
-	name := generic
 	first := tracks[0]
+
+	// Single track with no album — typical for a music video.
+	if len(tracks) == 1 && first.Album == "" {
+		name := first.Song
+		if first.Artist != "" && first.Song != "" {
+			name = first.Artist + " - " + first.Song
+		}
+		if s := safeFileName(name); s != "" {
+			return s + ".zip"
+		}
+		return generic + ".zip"
+	}
+
+	// Multiple tracks (or a single track that does have an album): use the album
+	// when every track shares the same one.
 	same := first.Album != ""
 	for _, t := range tracks[1:] {
 		if t.Album != first.Album || t.Artist != first.Artist {
@@ -148,18 +164,18 @@ func zipFileName(tracks []app.AddedTrack) string {
 			break
 		}
 	}
-	if same {
-		name = first.Album
-		if first.Artist != "" {
-			name = first.Artist + " - " + first.Album
-		}
+	if !same {
+		return generic + ".zip"
 	}
 
-	name = safeFileName(name)
-	if name == "" {
-		name = generic
+	name := first.Album
+	if first.Artist != "" {
+		name = first.Artist + " - " + first.Album
 	}
-	return name + ".zip"
+	if s := safeFileName(name); s != "" {
+		return s + ".zip"
+	}
+	return generic + ".zip"
 }
 
 // safeFileName removes what file systems and download managers dislike.

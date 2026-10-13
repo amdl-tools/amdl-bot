@@ -35,7 +35,10 @@ type RunnerConfig struct {
 // resolveToken prepares the HTTP client (proxy) and returns an Apple Music API
 // token. It tries the automatic fetch first and falls back to
 // general.authorization-token when the network cannot reach music.apple.com.
-func resolveToken(appCfg config.ConfigSet) (string, error) {
+//
+// It is a package-level variable so tests can replace it without hitting the
+// real music.apple.com endpoint.
+var resolveToken = func(appCfg config.ConfigSet) (string, error) {
 	// The proxy must be configured before GetToken makes its first request.
 	if err := download.Init(appCfg.General.Proxy); err != nil {
 		return "", fmt.Errorf("proxy config: %w", err)

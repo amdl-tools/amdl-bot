@@ -173,8 +173,17 @@ func TestZipFileName(t *testing.T) {
 		{"one album", []app.AddedTrack{{Artist: "Linh Cao", Album: "Mân Côi - Single"}, {Artist: "Linh Cao", Album: "Mân Côi - Single"}}, "Linh Cao - Mân Côi - Single.zip"},
 		{"several albums", []app.AddedTrack{{Artist: "A", Album: "X"}, {Artist: "A", Album: "Y"}}, "amdl-download.zip"},
 		{"several artists", []app.AddedTrack{{Artist: "A", Album: "X"}, {Artist: "B", Album: "X"}}, "amdl-download.zip"},
-		{"no album", []app.AddedTrack{{Artist: "A"}}, "amdl-download.zip"},
 		{"unsafe characters", []app.AddedTrack{{Artist: "AC/DC", Album: "Back in Black?"}}, "AC_DC - Back in Black_.zip"},
+
+		// Music video: single track, no album — named after the song.
+		{"mv with artist and song", []app.AddedTrack{{Artist: "Sơn Tùng M-TP", Song: "Muộn Rồi Mà Sao Còn"}}, "Sơn Tùng M-TP - Muộn Rồi Mà Sao Còn.zip"},
+		{"mv song only no artist", []app.AddedTrack{{Song: "Dynamite"}}, "Dynamite.zip"},
+		{"mv artist only no song", []app.AddedTrack{{Artist: "BTS"}}, "amdl-download.zip"},
+		{"mv all empty", []app.AddedTrack{{}}, "amdl-download.zip"},
+		{"mv unsafe chars in song", []app.AddedTrack{{Artist: "AC/DC", Song: "Back in Black?"}}, "AC_DC - Back in Black_.zip"},
+
+		// Single track that does have an album should still use artist+album.
+		{"single track with album", []app.AddedTrack{{Artist: "A", Album: "X", Song: "Y"}}, "A - X.zip"},
 	}
 	for _, tc := range cases {
 		if got := zipFileName(tc.tracks); got != tc.want {
