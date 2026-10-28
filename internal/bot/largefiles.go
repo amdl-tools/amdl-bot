@@ -223,7 +223,7 @@ func (b *Bot) deliverLarge(job *Job, tracks []app.AddedTrack) {
 
 	status := b.statusMessage(job.ChatID, fmt.Sprintf(
 		"%d file(s), %s in total, are over the %d MB Telegram limit. Zipping them (stored, no compression) and uploading to %s...",
-		len(tracks), humanSize(total), b.cfg.MaxFileSizeMB, host))
+		len(tracks), humanBytes(total), b.cfg.MaxFileSizeMB, host))
 
 	zipPath, zipName, err := buildStoredZip(job.ctx, tracks)
 	if err != nil {
@@ -242,7 +242,7 @@ func (b *Bot) deliverLarge(job *Job, tracks []app.AddedTrack) {
 			return
 		}
 		last = time.Now()
-		status(fmt.Sprintf("Uploading %s to %s: %d%% of %s", zipName, host, sent*100/all, humanSize(all)))
+		status(fmt.Sprintf("Uploading %s to %s: %d%% of %s", zipName, host, sent*100/all, humanBytes(all)))
 	})
 	if job.ctx.Err() != nil {
 		status("Cancelled.")
@@ -255,7 +255,7 @@ func (b *Bot) deliverLarge(job *Job, tracks []app.AddedTrack) {
 
 	status(fmt.Sprintf(
 		"%d file(s) over the Telegram limit were uploaded as one ZIP (%s, stored without compression):\n%s\nAnyone with this link can download it.",
-		len(tracks), humanSize(total), link))
+		len(tracks), humanBytes(total), link))
 	for _, t := range tracks {
 		b.cleaner.OnUploaded(t.Path)
 	}

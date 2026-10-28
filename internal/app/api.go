@@ -6,6 +6,8 @@ package app
 // These are thin wrappers around the existing unexported methods so that
 // the upstream logic stays unchanged.
 
+import "fmt"
+
 // RunAlbum downloads an album (or a single track within an album when urlArgI
 // is non-empty, matching the ?i= query parameter).
 func (r *Runner) RunAlbum(albumID, token, storefront, mediaUserToken, urlArgI string) error {
@@ -29,6 +31,7 @@ func (r *Runner) RunSong(songID, token, storefront, mediaUserToken string) error
 
 // RunMV downloads a music video.
 func (r *Runner) RunMV(mvID, saveDir, token, storefront string) error {
+	fmt.Println("Track 1 of 1: mv")
 	return r.mvDownloader(mvID, saveDir, token, storefront, nil)
 }
 

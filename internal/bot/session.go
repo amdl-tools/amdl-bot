@@ -10,12 +10,13 @@ import (
 // It is created when the user runs /search and discarded after they pick an item
 // or the session times out.
 type SearchSession struct {
-	SearchType string               // "album" | "song" | "artist"
-	Query      string
-	Items      []app.SearchResultItem
-	Offset     int
-	HasMore    bool
-	ExpiresAt  time.Time
+	SearchType  string               // "album" | "song" | "artist"
+	Query       string               // the original search query; never overwritten
+	SelectedURL string               // set when the user picks an item; cleared after mode selection
+	Items       []app.SearchResultItem
+	Offset      int
+	HasMore     bool
+	ExpiresAt   time.Time
 }
 
 // SessionStore is a thread-safe in-memory store for per-user sessions.

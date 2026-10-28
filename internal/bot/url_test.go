@@ -79,8 +79,8 @@ func TestListTracksWithoutNetwork(t *testing.T) {
 }
 
 func TestSmallFormatters(t *testing.T) {
-	if got := humanSize(1536); got != "1.5 KB" {
-		t.Errorf("humanSize(1536) = %q", got)
+	if got := humanBytes(1536); got != "1.5 KB" {
+		t.Errorf("humanBytes(1536) = %q", got)
 	}
 	if got := lastLines("a\nb\nc\nd", 2); got != "c\nd" {
 		t.Errorf("lastLines = %q", got)

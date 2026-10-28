@@ -32,9 +32,10 @@ const tokenTTL = 24 * time.Hour
 
 // tokenState holds the cached token and the time it was fetched.
 type tokenState struct {
-	mu        sync.RWMutex
-	value     string
-	fetchedAt time.Time
+	mu         sync.RWMutex
+	refreshMu  sync.Mutex // serialises concurrent refresh calls
+	value      string
+	fetchedAt  time.Time
 }
 
 // resolvedToken returns the cached Apple Music token, fetching a fresh one when
@@ -62,10 +63,20 @@ func (b *Bot) invalidateToken() {
 }
 
 // refreshToken fetches a new token, stores it in the cache, and returns it.
-// Concurrent callers may race here; the last write wins, which is harmless —
-// all fetched tokens are valid, and the extra fetch is rare (only on expiry or
-// first call).
+// Only one goroutine fetches at a time; others wait and reuse the result.
 func (b *Bot) refreshToken() (string, error) {
+	b.cachedToken.refreshMu.Lock()
+	defer b.cachedToken.refreshMu.Unlock()
+
+	// Another goroutine may have already refreshed while we waited for the lock.
+	b.cachedToken.mu.RLock()
+	tok := b.cachedToken.value
+	age := time.Since(b.cachedToken.fetchedAt)
+	b.cachedToken.mu.RUnlock()
+	if tok != "" && age < tokenTTL {
+		return tok, nil
+	}
+
 	tok, err := resolveToken(b.appCfg)
 	if err != nil {
 		return "", err

@@ -184,8 +184,8 @@ func (b *Bot) handleSearchPick(userID int64, chatID int64, msgID int, data strin
 	}
 	item := sess.Items[idx]
 
-	// Store the chosen URL in session so mode selection can retrieve it.
-	sess.Query = "__selected__" + item.URL
+	// Store the chosen URL separately so Query stays intact for page navigation.
+	sess.SelectedURL = item.URL
 	b.sessions.SetSearch(userID, sess)
 
 	// Ask for quality/mode
@@ -213,11 +213,11 @@ func (b *Bot) handleModeSelect(userID int64, chatID int64, data string, username
 		_, _ = b.api.Send(tgbotapi.NewMessage(chatID, "Session expired. Run /search again."))
 		return
 	}
-	if !strings.HasPrefix(sess.Query, "__selected__") {
+	if sess.SelectedURL == "" {
 		_, _ = b.api.Send(tgbotapi.NewMessage(chatID, "No item selected. Run /search again."))
 		return
 	}
-	selectedURL := strings.TrimPrefix(sess.Query, "__selected__")
+	selectedURL := sess.SelectedURL
 	b.sessions.ClearSearch(userID)
 
 	modeStr := strings.TrimPrefix(data, "mode:")
@@ -610,7 +610,7 @@ func (b *Bot) sendTracks(job *Job, tracks []app.AddedTrack, up *UploadProgress) 
 			}
 			_, _ = b.api.Send(tgbotapi.NewMessage(job.ChatID,
 				fmt.Sprintf("File too large to send (%s): %s",
-					humanSize(info.Size()), filepath.Base(track.Path))))
+					humanBytes(info.Size()), filepath.Base(track.Path))))
 			continue
 		}
 
@@ -867,16 +867,4 @@ func lastLines(log string, n int) string {
 	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
-// humanSize formats bytes as a human-readable string.
-func humanSize(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
-}
+
